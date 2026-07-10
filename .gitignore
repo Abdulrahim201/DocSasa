@@ -1,0 +1,25 @@
+# Environment variables — never commit real secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Virtual environment (uv)
+.venv/
+# Note: uv.lock is intentionally NOT ignored — commit it for reproducible installs
+
+# Django
+*.log
+db.sqlite3
+media/
+staticfiles/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
