@@ -6,6 +6,9 @@ from .models import Appointment, AuditLog, Patient
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from .models import Patient
+from django.core.mail import send_mail
+from .models import OTP
+
 
 SLOT_MINUTES = 30
 
@@ -212,3 +215,38 @@ def reschedule_appointment(*, appointment_id, new_date, new_start_time, performe
         )
 
     return appointment
+
+
+def request_otp(appointment, purpose):
+    """Generate and email a one-time code for a patient to verify a
+    cancel/reschedule action on their own appointment, without logging in."""
+    otp = OTP.objects.create(
+        appointment=appointment,
+        code=OTP.generate_code(),
+        purpose=purpose,
+    )
+    send_mail(
+        subject=f"Your DocSasa verification code",
+        message=(
+            f"Your one-time code to {purpose} your appointment is: {otp.code}\n"
+            f"This code expires in 10 minutes and can only be used once."
+        ),
+        from_email=None,  # uses DEFAULT_FROM_EMAIL from settings
+        recipient_list=[appointment.patient.email],
+    )
+    return otp
+
+
+def verify_otp(appointment, purpose, code):
+    """Check a submitted OTP code. Raises BookingError if invalid/expired/
+    already used. Marks it used on success so it can't be replayed."""
+    otp = (
+        OTP.objects.filter(appointment=appointment, purpose=purpose, code=code, is_used=False)
+        .order_by("-created_at")
+        .first()
+    )
+    if not otp or not otp.is_valid():
+        raise BookingError("Invalid or expired verification code.")
+
+    otp.is_used = True
+    otp.save(update_fields=["is_used"])

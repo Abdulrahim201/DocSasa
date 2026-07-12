@@ -254,7 +254,8 @@ Real secrets live in a local `.env` file, which is **git-ignored** and never com
 | `SECRET_KEY`        | Django secret key                         |
 | `DEBUG`             | `True`/`False`                            |
 | `DATABASE_URL`      | PostgreSQL connection string (points at the Dockerized `db` service for local dev, e.g. `postgres://docsasa_user:docsasa_password@localhost:5432/docsasa`) |
-| `EMAIL_HOST`        | SMTP host for notifications               |
+| `EMAIL_BACKEND`     | Django email backend. Defaults to the **console backend** (`django.core.mail.backends.console.EmailBackend`), which prints emails to the terminal instead of sending them — no SMTP setup needed for local dev. Override to `django.core.mail.backends.smtp.EmailBackend` (with the vars below) for real delivery. |
+| `EMAIL_HOST`        | SMTP host for notifications (only used if `EMAIL_BACKEND` is set to the SMTP backend) |
 | `EMAIL_HOST_USER`   | SMTP username                             |
 | `EMAIL_HOST_PASSWORD` | SMTP password                           |
 | `MAX_DOCTORS`       | Current cap on number of doctors (default: 5) |
@@ -264,34 +265,37 @@ Real secrets live in a local `.env` file, which is **git-ignored** and never com
 
 > Base URL: `/api/v1/`
 
+**Authentication:** staff (receptionists) authenticate via DRF token auth — `POST /api/v1/auth/login/` with `{"username": ..., "password": ...}` returns `{"token": "..."}`. Include it on subsequent requests as an `Authorization: Token <token>` header. Patients never authenticate; unauthenticated requests are the expected, normal path for patient self-service (see [System Design → Key Decisions, #9](#key-decisions)).
+
 **Required (per assessment spec):**
 
 | Method | Endpoint                                       | Description                                                                 |
 |--------|--------------------------------------------------|-------------------------------------------------------------------------------|
-| POST   | `/appointments`                                | Book a slot. No OTP required. Validates it falls within the doctor's working hours, isn't in the past (or within `MIN_BOOKING_LEAD_MINUTES`), and isn't already taken. |
-| GET    | `/doctors/{id}/availability?date=YYYY-MM-DD`   | Return all available 30-minute slots for a doctor on a given date.           |
-| PATCH  | `/appointments/{id}/cancel`                    | Cancel an appointment with a required `reason`. Requires a valid `otp_code` unless the request is from an authenticated staff `User`. Errors if already cancelled. |
-| PATCH  | `/appointments/{id}/reschedule`                | Move an appointment to a new slot, validated as a fresh booking. Requires a valid `otp_code` unless the request is from an authenticated staff `User`. Errors if already cancelled. |
+| POST   | `/appointments/`                               | Book a slot. No OTP required. Validates it falls within the doctor's working hours, isn't in the past (or within `MIN_BOOKING_LEAD_MINUTES`), and isn't already taken. |
+| GET    | `/doctors/{id}/availability/?date=YYYY-MM-DD`  | Return all available 30-minute slots for a doctor on a given date.           |
+| PATCH  | `/appointments/{id}/cancel/`                   | Cancel an appointment with a required `reason`. Requires a valid `otp_code` unless the request is from an authenticated staff `User` (token auth). Errors if already cancelled. |
+| PATCH  | `/appointments/{id}/reschedule/`               | Move an appointment to a new slot, validated as a fresh booking. Requires a valid `otp_code` unless the request is from an authenticated staff `User`. Errors if already cancelled. |
 
 **Bonus (per assessment spec):**
 
 | Method | Endpoint                          | Description                                                        |
 |--------|-------------------------------------|----------------------------------------------------------------------|
-| GET    | `/patients/{id}/appointments`     | Upcoming appointments for a patient, sorted by date.                |
-| —      | *(validation rule)*                | Bookings are rejected if the slot starts within `MIN_BOOKING_LEAD_MINUTES` (default 60) of now. |
+| GET    | `/patients/{id}/appointments`     | Upcoming appointments for a patient, sorted by date. *(not yet built)* |
+| —      | *(validation rule)*                | Bookings are rejected if the slot starts within `MIN_BOOKING_LEAD_MINUTES` (default 60) of now. ✅ implemented |
 
 **Additional (not required, added for completeness):**
 
 | Method | Endpoint                                  | Description                                     |
 |--------|--------------------------------------------|---------------------------------------------------|
-| GET    | `/doctors/`                               | List all doctors                                   |
-| GET    | `/appointments/`                          | List appointments for the current staff user       |
-| GET    | `/appointments/{id}/`                     | Retrieve a single appointment                      |
-| GET    | `/appointments/history/`                  | Appointment history / audit trail                  |
-| GET    | `/dashboard/stats/`                       | Appointment statistics (booked/cancelled/etc.)     |
-| POST   | `/appointments/{id}/request-otp/`         | Request a one-time code for `cancel` or `reschedule`, emailed to the patient on file |
+| POST   | `/appointments/{id}/request-otp/`         | Request a one-time code for `cancel` or `reschedule`, emailed to the patient on file (console-printed in local dev). |
+| POST   | `/auth/login/`                            | Staff login — exchanges username/password for a DRF auth token.   |
+| GET    | `/doctors/`                               | List all doctors *(not yet built)*                 |
+| GET    | `/appointments/`                          | List appointments for the current staff user *(not yet built)* |
+| GET    | `/appointments/{id}/`                     | Retrieve a single appointment *(not yet built)*    |
+| GET    | `/appointments/history/`                  | Appointment history / audit trail *(not yet built)* |
+| GET    | `/dashboard/stats/`                       | Appointment statistics (booked/cancelled/etc.) *(not yet built)* |
 
-*(Adjust endpoint names/paths to match the actual `urls.py` once finalized.)*
+All endpoints above marked without "(not yet built)" have been manually verified end-to-end against a running server (see [Testing](#testing) for the automated test suite covering the underlying service-layer logic).
 
 ## Testing
 
@@ -347,4 +351,4 @@ The project intentionally starts small (5 doctors) but is structured to grow:
 
 ## License
 
- MIT
+MIT.
