@@ -280,7 +280,7 @@ Real secrets live in a local `.env` file, which is **git-ignored** and never com
 
 | Method | Endpoint                          | Description                                                        |
 |--------|-------------------------------------|----------------------------------------------------------------------|
-| GET    | `/patients/{id}/appointments`     | Upcoming appointments for a patient, sorted by date. *(not yet built)* |
+| GET    | `/patients/{id}/appointments/`   | Upcoming (booked, future-dated) appointments for a patient, sorted by date. **Staff-only** (`IsAuthenticated`) — deliberately not public, since `Patient.id` is a plain sequential integer and exposing another person's appointment history by guessable ID would be a privacy leak. Patients access their own appointment individually via the UUID link instead (see [System Design → Key Decisions, #8 and #10](#key-decisions)). |
 | —      | *(validation rule)*                | Bookings are rejected if the slot starts within `MIN_BOOKING_LEAD_MINUTES` (default 60) of now. ✅ implemented |
 
 **Additional (not required, added for completeness):**
@@ -327,7 +327,7 @@ The project intentionally starts small (5 doctors) but is structured to grow:
 ## Roadmap
 
 **Bonus items from the assessment spec:**
-- [ ] `GET /patients/{id}/appointments` — upcoming appointments for a patient, sorted by date (not yet built)
+- [x] `GET /patients/{id}/appointments` — upcoming appointments for a patient, sorted by date. Implemented as staff-only, not public (see API Reference note).
 - [x] Reject bookings that start within 1 hour of now — implemented via `MIN_BOOKING_LEAD_MINUTES`
 
 **Deferred design decisions (see [System Design → Deferred to Future Iterations](#deferred-to-future-iterations)):**

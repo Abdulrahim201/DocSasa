@@ -5,6 +5,7 @@ from .views import (
     CancelAppointmentView,
     RequestOTPView,
     RescheduleAppointmentView,
+    PatientAppointmentsView,
 )
 
 urlpatterns = [
@@ -12,4 +13,5 @@ urlpatterns = [
     path("appointments/<uuid:pk>/cancel/", CancelAppointmentView.as_view(), name="appointment-cancel"),
     path("appointments/<uuid:pk>/reschedule/", RescheduleAppointmentView.as_view(), name="appointment-reschedule"),
     path("appointments/<uuid:pk>/request-otp/", RequestOTPView.as_view(), name="appointment-request-otp"),
+    path("patients/<int:pk>/appointments/", PatientAppointmentsView.as_view(), name="patient-appointments"),
 ]

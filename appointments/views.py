@@ -19,7 +19,11 @@ from .services import (
     request_otp,
     verify_otp,
 )
+from datetime import date as date_cls
 
+from rest_framework.permissions import IsAuthenticated
+
+from .models import Patient
 
 def _get_appointment_or_404(pk):
     try:
@@ -137,3 +141,28 @@ class RescheduleAppointmentView(APIView):
             return Response({"detail": str(e)}, status=400)
 
         return Response(AppointmentSerializer(updated).data)
+    
+
+class PatientAppointmentsView(APIView):
+    """GET /patients/{id}/appointments/
+    Staff-only (authenticated User via token auth). Not exposed to patients —
+    see README, System Design, for why this isn't a public/patient-facing endpoint."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            patient = Patient.objects.get(pk=pk)
+        except Patient.DoesNotExist:
+            return Response({"detail": "Patient not found."}, status=404)
+
+        upcoming = (
+            Appointment.objects.filter(
+                patient=patient,
+                status=Appointment.Status.BOOKED,
+                date__gte=date_cls.today(),
+            )
+            .select_related("doctor", "patient")
+            .order_by("date", "start_time")
+        )
+
+        return Response(AppointmentSerializer(upcoming, many=True).data)
