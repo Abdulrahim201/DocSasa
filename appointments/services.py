@@ -1,11 +1,11 @@
 from datetime import date as date_cls, datetime, time, timedelta
-
 from django.conf import settings
 from django.utils import timezone
-
 from doctors.models import WorkingHours
-
-from .models import Appointment
+from .models import Appointment, AuditLog, Patient
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
+from .models import Patient
 
 SLOT_MINUTES = 30
 
@@ -62,3 +62,153 @@ def get_available_slots(doctor, target_date: date_cls) -> list[dict]:
         available = [slot for slot in available if slot["start_time"] >= cutoff]
 
     return available
+
+class BookingError(Exception):
+    """Base class for booking-related failures with a user-facing message."""
+
+
+class SlotUnavailableError(BookingError):
+    pass
+
+
+class InvalidSlotError(BookingError):
+    pass
+
+
+def _validate_slot_request(doctor, target_date, start_time):
+    """Validate a requested slot exactly like a fresh availability check —
+    used by both book_appointment and reschedule_appointment."""
+    available = get_available_slots(doctor, target_date)
+    if not any(slot["start_time"] == start_time for slot in available):
+        raise SlotUnavailableError(
+            "This slot is not available. It may be outside working hours, "
+            "in the past, or already booked."
+        )
+    # end_time is always start_time + SLOT_MINUTES, by definition of the fixed grid
+    end_time = (
+        datetime.combine(target_date, start_time) + timedelta(minutes=SLOT_MINUTES)
+    ).time()
+    return end_time
+
+
+def book_appointment(*, doctor, date, start_time, patient_name, patient_email,
+                      patient_phone="", booked_by_user=None):
+    """Book a slot for a patient. Validates the slot exactly like a fresh
+    availability check, then relies on the unique_active_slot DB constraint
+    as the actual correctness guarantee under concurrent requests."""
+    end_time = _validate_slot_request(doctor, date, start_time)
+
+    patient, _ = Patient.objects.get_or_create(
+        email=patient_email,
+        defaults={"name": patient_name, "phone": patient_phone},
+    )
+
+    try:
+        with transaction.atomic():
+             # full_clean() intentionally skipped here — end_time is always derived
+             # correctly by _validate_slot_request, so this call site is trusted.
+            appointment = Appointment.objects.create(
+                doctor=doctor,
+                patient=patient,
+                date=date,
+                start_time=start_time,
+                end_time=end_time,
+                booked_by_user=booked_by_user,
+            )
+            AuditLog.objects.create(
+                appointment=appointment,
+                action=AuditLog.Action.CREATED,
+                performed_by_user=booked_by_user,
+            )
+    except IntegrityError:
+        # Someone else booked this exact slot between our availability check
+        # and this insert — the DB constraint is the real source of truth here.
+        raise SlotUnavailableError(
+            "This slot was just booked by someone else. Please choose another."
+        )
+
+    return appointment
+
+def cancel_appointment(*, appointment_id, reason, performed_by_user=None):
+    """Cancel an appointment. Rejects if already cancelled.
+    select_for_update() locks the row for the duration of the transaction,
+    protecting against a concurrent cancel/reschedule racing on the same appointment."""
+    if not reason:
+        raise BookingError("A cancellation reason is required.")
+
+    with transaction.atomic():
+        try:
+            appointment = Appointment.objects.select_for_update().get(pk=appointment_id)
+        except Appointment.DoesNotExist:
+            raise BookingError("Appointment not found.")
+
+        if appointment.status == Appointment.Status.CANCELLED:
+            raise BookingError("This appointment is already cancelled.")
+
+        appointment.status = Appointment.Status.CANCELLED
+        appointment.cancellation_reason = reason
+        appointment.cancelled_by_user = performed_by_user
+        appointment.save(update_fields=[
+            "status", "cancellation_reason", "cancelled_by_user", "updated_at",
+        ])
+
+        AuditLog.objects.create(
+            appointment=appointment,
+            action=AuditLog.Action.CANCELLED,
+            performed_by_user=performed_by_user,
+            notes=reason,
+        )
+
+    return appointment
+
+def reschedule_appointment(*, appointment_id, new_date, new_start_time, performed_by_user=None):
+    """Move an appointment to a new slot. The new slot is validated exactly
+    like a fresh booking. The original slot is freed and the new slot is
+    taken in a single UPDATE statement (same row, same transaction) — so
+    there's no window where the appointment holds neither slot, and no
+    window where it holds both."""
+
+    with transaction.atomic():
+        try:
+            appointment = Appointment.objects.select_for_update().get(pk=appointment_id)
+        except Appointment.DoesNotExist:
+            raise BookingError("Appointment not found.")
+
+        if appointment.status == Appointment.Status.CANCELLED:
+            raise BookingError("Cannot reschedule a cancelled appointment.")
+
+        if appointment.date == new_date and appointment.start_time == new_start_time:
+            raise BookingError("This is already the appointment's current slot.")
+
+        # Validated exactly like a fresh booking — same working-hours, past-time,
+        # and already-taken checks as book_appointment(). This appointment's own
+        # (old) slot doesn't interfere, since we're checking availability for the
+        # *new* date/time, not the one this row currently occupies.
+        new_end_time = _validate_slot_request(
+            appointment.doctor, new_date, new_start_time
+        )
+
+        old_date, old_start_time = appointment.date, appointment.start_time
+
+        appointment.date = new_date
+        appointment.start_time = new_start_time
+        appointment.end_time = new_end_time
+
+        try:
+            appointment.save(update_fields=["date", "start_time", "end_time", "updated_at"])
+        except IntegrityError:
+            # Someone else took the new slot between our validation and this save.
+            # The transaction rolls back entirely — appointment keeps its original
+            # slot, exactly as if the reschedule had never been attempted.
+            raise SlotUnavailableError(
+                "That slot was just taken by someone else. Please choose another."
+            )
+
+        AuditLog.objects.create(
+            appointment=appointment,
+            action=AuditLog.Action.RESCHEDULED,
+            performed_by_user=performed_by_user,
+            notes=f"Moved from {old_date} {old_start_time} to {new_date} {new_start_time}",
+        )
+
+    return appointment
