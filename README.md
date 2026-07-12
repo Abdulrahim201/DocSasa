@@ -17,6 +17,7 @@ DocSasa lets patients see real-time availability for a set of doctors and book a
 - [Booking Flow](#booking-flow)
 - [Getting Started](#getting-started)
 - [API Reference](#api-reference)
+- [Testing](#testing)
 - [Scalability Notes](#scalability-notes)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
@@ -34,11 +35,11 @@ This section documents the reasoning behind the core design decisions — what w
 
 ### Actors
 
-- **Patient** — books, cancels, or reschedules their own appointments.
-- **Receptionist** — books, cancels, or reschedules on behalf of a patient. In practice, many patients (particularly elderly patients) prefer a human to handle booking for them, so the receptionist is a first-class actor rather than an admin-only afterthought.
-- **Doctor** — a largely passive actor in v1. Doctors define their own working hours and view their schedule/appointments, but do not book, cancel, or reschedule appointments themselves.
+- **Patient** — books, cancels, or reschedules their own appointments **without ever creating an account or logging in**. A patient is represented by a lightweight `Patient` record (name, email, phone) attached to their appointment — not a `User`.
+- **Receptionist** — an authenticated `User` who books, cancels, or reschedules on behalf of a patient. In practice, many patients (particularly elderly patients) prefer a human to handle booking for them, so the receptionist is a first-class actor rather than an admin-only afterthought.
+- **Doctor** — a largely passive actor in v1. Doctors define their own working hours and view their schedule/appointments, but do not book, cancel, or reschedule appointments themselves, and do not need a login for that (schedule setup can be done by a receptionist/admin via the admin site).
 
-Patients and receptionists are both represented as a single `User` model (see [Key Decisions](#key-decisions), #6) — the system does not gate the booking endpoints by role.
+`User` in this system represents **staff only** (see [Key Decisions](#key-decisions), #6) — patients are never required to authenticate. Since a patient-initiated cancel/reschedule therefore has no login to rely on for verification, it's instead verified with a one-time email code (see #8, OTP verification).
 
 ### Key Decisions
 
@@ -54,9 +55,15 @@ Patients and receptionists are both represented as a single `User` model (see [K
 
 5. **A doctor's working hours can change without disturbing existing bookings.** If a doctor's hours are edited after appointments already exist, those appointments are **grandfathered** — they are not auto-cancelled or auto-moved. The new hours only affect future slot generation. As a lightweight safeguard, the system flags any existing appointment that now falls outside the updated hours so a receptionist can review and resolve it manually, rather than the system silently reassigning patients.
 
-6. **A single `User` model, with no role-based restriction on the booking endpoints.** Patients and receptionists are both `User`s; there is no admin/staff permission tier distinguishing what a patient can do versus what a receptionist can do at the API level — either can book, cancel, or reschedule any appointment. This is a deliberate scope decision, not an oversight: the system isn't yet integrated with a clinic's real staff-permissions layer (e.g. an HMIS), so building a full role hierarchy now would be premature. Identity is still required on every request (the system isn't anonymous), because `booked_by` / `cancelled_by` are recorded on the appointment for the audit log.
+6. **`User` represents staff only — patients never authenticate.** Early in the design, both patients and receptionists were considered as one `User` model. This was revised: requiring every patient to create an account and log in undercuts the whole reason a receptionist exists as a fallback (elderly patients, in particular, often don't want to deal with an account at all). So `User` (Django's custom, auth-backed model) now represents receptionists/staff only, while patients are represented by a separate, login-free `Patient` record. There is still no role hierarchy *among* staff `User`s — any receptionist can act on any appointment — since the system isn't yet integrated with a clinic's real staff-permissions layer (e.g. an HMIS), so building a full role hierarchy now would be premature.
 
-7. **Rescheduling is an atomic "validate-then-swap," not a simple field update.** The requested new slot is validated using the *exact same rules as a fresh booking* (within working hours, not in the past, not already taken). Only once the new slot passes that validation does the system free the original slot and move the appointment onto the new date/time — both steps happen inside a single database transaction. If the new slot fails validation, the original booking is left completely untouched, so a patient can never end up losing their original slot without successfully gaining a new one.
+7. **Rescheduling is an atomic "validate-then-swap," not a simple field update.** The requested new slot is validated using the *exact same rules as a fresh booking* (within working hours, not in the past, not already taken). Only once the new slot passes that validation does the system update the appointment's date/time — freeing the original slot and taking the new one happen as the *same* database `UPDATE` statement, inside one transaction. If the new slot fails validation (including a last-moment `IntegrityError` if someone else grabbed it in the meantime), the whole transaction rolls back and the original booking is left completely untouched, so a patient can never end up losing their original slot without successfully gaining a new one.
+
+8. **Appointment IDs are UUIDs, not sequential integers.** Since patients act on their own appointments without logging in (see #6), the appointment ID itself becomes part of the access control story — it's the thing that gets put in a link and clicked. A sequential integer ID would let someone enumerate or guess other patients' appointment IDs; a UUID makes that infeasible at negligible cost.
+
+9. **Patient self-service (cancel/reschedule) is verified with a one-time email code, not a name check.** Since patients don't log in, *something* has to confirm the person acting on an appointment is actually who they claim to be. A name-based check was considered first, but names aren't unique or secret, so a short-lived, single-use 6-digit OTP emailed to the patient's address was chosen instead — it's a real (if lightweight) proof of access to the inbox tied to the appointment. Booking a *new* appointment doesn't require an OTP (low risk — it doesn't disrupt an existing appointment), but cancel/reschedule do. **Staff (`User`) requests are exempt from OTP** — their authenticated session plus the audit log (`cancelled_by_user` / `booked_by_user` / `AuditLog.performed_by_user`) already provides equivalent accountability, so requiring OTP for staff too would just be redundant friction. Phone/SMS-based OTP was considered and explicitly deferred (see [Deferred to Future Iterations](#deferred-to-future-iterations)) — email reuses infrastructure already needed for notifications, without pulling in a third-party SMS provider for v1.
+
+10. **The confirmation email includes a direct manage-appointment link, not a UUID the patient has to remember.** Patients are never expected to memorize or type their appointment ID; the booking confirmation email links straight to a manage page for that appointment. The OTP requirement (#9) still applies when actually cancelling/rescheduling from that page — the link only grants *viewing* access, since a link can outlive its original context (forwarded, cached, a lost device), while the OTP is a fresh, action-specific check at the moment something is actually changed.
 
 ### Deferred to Future Iterations
 
@@ -73,6 +80,8 @@ These were identified during design but intentionally left out of v1 to keep the
   - reason (optional)
   ```
 - **Role-based permissions** distinguishing patients from receptionists at the API layer, and integration with an external clinic HMIS.
+- **Phone/SMS-based OTP verification.** v1 verifies patient self-service actions (cancel/reschedule) by email OTP only. Phone number is still captured on `Patient` (useful for staff to call a patient directly), but isn't wired into any verification flow. SMS OTP would require integrating a third-party provider (e.g. Twilio, Africa's Talking) — deferred to v1.1+ once that added cost/complexity is worth it.
+- **Rate limiting on OTP requests** — nothing currently stops repeated OTP requests for the same appointment; worth adding (e.g. max 3 per appointment per hour) before production use, to prevent inbox-spamming abuse.
 
 ## Core Concepts
 
@@ -84,12 +93,13 @@ These were identified during design but intentionally left out of v1 to keep the
 
 ## Features
 
-- 🗓️ **Slot-based booking** — Patients (or a receptionist on their behalf) see only real, free 30-minute slots per doctor per day.
-- 🚫 **No double-booking** — Database-level uniqueness constraints, backed by row locking, prevent two requests from booking the same slot.
+- 🗓️ **Slot-based booking, no login required** — Patients see only real, free 30-minute slots per doctor per day and book directly, with no account needed. A receptionist can also book on a patient's behalf.
+- 🚫 **No double-booking** — A database-level uniqueness constraint is the actual guarantee, backed by row locking for a clean error response when two requests race.
+- 🔐 **OTP-verified self-service** — Patients cancel/reschedule their own appointment using a one-time code emailed to them; authenticated staff skip this since their session already provides accountability.
 - ❌ **Cancellations with a reason** — Cancelling requires a reason and frees the slot; cancelling an already-cancelled appointment returns an error.
 - 🔁 **Rescheduling** — Move an appointment to a new slot, validated exactly like a fresh booking, without losing its history.
-- 🕓 **Appointment history & audit logs** — Every booking, cancellation, and reschedule is tracked with who performed it, for accountability.
-- 📧 **Email notifications** — Confirmation, cancellation, and reschedule emails.
+- 🕓 **Appointment history & audit logs** — Every booking, cancellation, and reschedule is tracked with who performed it (or that it was self-service), for accountability.
+- 📧 **Email notifications** — Confirmation (with a manage-appointment link), cancellation, reschedule, and OTP emails.
 - 🔌 **REST API** — Full API access via Django REST Framework for integration with a frontend (web/mobile) client.
 
 ## Tech Stack
@@ -114,8 +124,8 @@ Patient (client / frontend)
         ▼
   Django application layer
    ├── Doctors & Working Hours
-   ├── Slot generation logic
-   ├── Appointment booking/cancellation
+   ├── services.py — slot generation, booking, cancel, reschedule (framework-agnostic business logic)
+   ├── OTP verification (for patient self-service, no login)
    └── Audit logging
         │
         ▼
@@ -140,50 +150,67 @@ A simplified view of the core entities:
 - `start_time`
 - `end_time`
 
-**User** *(shared by patients and receptionists — no role-based permission tier in v1)*
+**User** *(staff only — receptionists/admins; patients never get an account)*
+- `id`
+- `username`, `email`, `password` (inherited from Django's built-in auth user)
+- `role` (`receptionist` / `admin` — for labeling/display only, not permission gating between staff)
+
+**Patient** *(no login — identified by email; a link in the confirmation email, not a login, is how a patient finds their own appointment)*
 - `id`
 - `name`
-- `email` / `phone`
-- `role` (`patient` / `receptionist` — for labeling/display only, not permission gating)
+- `email` (required — the only channel used for OTP verification in v1)
+- `phone` (optional — informational only, e.g. for staff to call)
 
 **Appointment**
-- `id`
+- `id` (**UUID**, not a sequential integer — deliberately unguessable, since it's safe to put in a link a patient clicks without logging in)
 - `doctor` (FK → Doctor)
-- `patient` (FK → User)
+- `patient` (FK → Patient)
 - `date`
 - `start_time`
 - `end_time` (derived: `start_time + 30 minutes`)
 - `status` (`booked`, `cancelled`, `completed`)
 - `cancellation_reason` (nullable — set when `status='cancelled'`)
-- `booked_by` (FK → User — the patient themself, or the receptionist who booked on their behalf)
-- `cancelled_by` (FK → User, nullable)
+- `booked_by_user` (FK → User, **nullable** — null means the patient booked directly themself; set means a receptionist booked on their behalf)
+- `cancelled_by_user` (FK → User, nullable — same meaning as above)
 - `created_at`, `updated_at`
 
 **AuditLog**
 - `id`
 - `appointment` (FK → Appointment)
 - `action` (`created`, `cancelled`, `rescheduled`, `updated`)
-- `performed_by` (FK → User)
+- `performed_by_user` (FK → User, nullable — null means the patient acted directly, verified via OTP rather than a login)
+- `notes`
 - `timestamp`
+
+**OTP** *(verifies a patient acting on their own appointment without a login — see [System Design → Key Decisions, #9](#key-decisions))*
+- `id`
+- `appointment` (FK → Appointment)
+- `code` (6 digits)
+- `purpose` (`cancel` / `reschedule` — a code for one purpose can't be reused for the other)
+- `expires_at` (10-minute validity window)
+- `is_used` (single-use)
+- `created_at`
 
 > A `UniqueConstraint` on `(doctor, date, start_time)`, scoped to active (`booked`) appointments, is what guarantees a slot can't be double-booked — see [System Design → Key Decisions, #4](#key-decisions).
 
 ## Booking Flow
 
-1. Patient (or a receptionist on their behalf) selects a **doctor**.
+1. Patient (no login required) or a receptionist (logged in) selects a **doctor**.
 2. Patient/receptionist selects a **date**.
-3. System generates all 30-minute slots from that doctor's working hours for that date, then removes any slot with an existing active appointment, along with any slot in the past or within a minimum lead time before the appointment (see [Roadmap](#roadmap) — bonus).
-4. Patient/receptionist picks an available slot and confirms.
+3. System generates all 30-minute slots from that doctor's working hours for that date, then removes any slot with an existing active appointment, along with any slot in the past or within a minimum lead time before the appointment (`MIN_BOOKING_LEAD_MINUTES`, default 60 — see [Roadmap](#roadmap) bonus item).
+4. Patient/receptionist picks an available slot and confirms. Booking requires no OTP — it's low-risk since it doesn't disrupt an existing appointment.
 5. System attempts to create the appointment; the database-level uniqueness constraint ensures that if two requests race for the same slot, only one succeeds (see [System Design → Key Decisions, #4](#key-decisions)).
-6. On success: appointment is saved with `booked_by` recorded, an audit log entry is created, and confirmation emails are sent.
-7. To cancel: patient or receptionist cancels the appointment **and must supply a reason**; status is updated to `cancelled`, `cancelled_by` and `cancellation_reason` are recorded, an audit log entry is created, the slot becomes available again, and a cancellation email is sent. Attempting to cancel an already-cancelled appointment returns an error rather than silently succeeding.
-8. To reschedule: patient or receptionist requests a new date/slot for an existing appointment. The new slot goes through the **exact same validation as a fresh booking** — it must be a valid slot within the doctor's working hours, not in the past, and not already have an active appointment. If valid, the system frees the **original slot** (making it immediately available to others) and moves the appointment to the new date/`start_time`/`end_time`, keeping the same appointment `id` and history. The change is logged as a `rescheduled` action and an update email is sent. If the new slot is unavailable or invalid, or the appointment is already cancelled, the request is rejected and the original booking is left untouched.
+6. On success: appointment is saved with `booked_by_user` set only if a receptionist made the booking (null if the patient booked directly), an audit log entry is created, and a confirmation email is sent to the patient — including a direct link to manage (cancel/reschedule) that specific appointment.
+7. To cancel or reschedule as a **patient** (no login): the patient requests a one-time code, emailed to the address on the appointment, then submits it alongside the cancel/reschedule request. The code is single-use, purpose-specific (a `cancel` code can't be used to `reschedule`), and expires after 10 minutes.
+8. To cancel or reschedule as a **receptionist** (logged in): no OTP is required — their authenticated session, combined with `cancelled_by_user`/`booked_by_user` and the audit log entry, already provides equivalent accountability.
+9. **Cancelling** requires a reason; status is updated to `cancelled`, `cancellation_reason` (and `cancelled_by_user`, if staff-initiated) are recorded, an audit log entry is created, the slot becomes available again, and a cancellation email is sent. Attempting to cancel an already-cancelled appointment returns an error rather than silently succeeding.
+10. **Rescheduling** validates the new slot with the **exact same rules as a fresh booking** — within the doctor's working hours, not in the past, not already taken. If valid, the appointment's date/`start_time`/`end_time` are updated in a single database statement inside one transaction — the original slot is freed and the new slot is taken atomically, so there's no window where the appointment holds neither slot or both. The change is logged as a `rescheduled` action and an update email is sent. If the new slot turns out to be unavailable (including a last-moment race), or the appointment is already cancelled, the request is rejected and the transaction rolls back — the original booking is left completely untouched.
 
 ## Getting Started
 
 ### Prerequisites
 - Python 3.x
-- PostgreSQL
+- [Docker](https://docs.docker.com/get-docker/) & Docker Compose (used to run PostgreSQL locally)
 - [uv](https://docs.astral.sh/uv/) (used for virtual environment and dependency management)
 
 ### Installation
@@ -202,6 +229,9 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 # Configure environment variables
 cp .env.example .env
 # edit .env with your DB credentials, email settings, secret key, etc.
+
+# Start PostgreSQL (Docker)
+docker compose up -d
 
 # Run migrations
 uv run manage.py migrate
@@ -223,43 +253,65 @@ Real secrets live in a local `.env` file, which is **git-ignored** and never com
 |---------------------|-------------------------------------------|
 | `SECRET_KEY`        | Django secret key                         |
 | `DEBUG`             | `True`/`False`                            |
-| `DATABASE_URL`      | PostgreSQL connection string              |
-| `EMAIL_HOST`        | SMTP host for notifications               |
+| `DATABASE_URL`      | PostgreSQL connection string (points at the Dockerized `db` service for local dev, e.g. `postgres://docsasa_user:docsasa_password@localhost:5432/docsasa`) |
+| `EMAIL_BACKEND`     | Django email backend. Defaults to the **console backend** (`django.core.mail.backends.console.EmailBackend`), which prints emails to the terminal instead of sending them — no SMTP setup needed for local dev. Override to `django.core.mail.backends.smtp.EmailBackend` (with the vars below) for real delivery. |
+| `EMAIL_HOST`        | SMTP host for notifications (only used if `EMAIL_BACKEND` is set to the SMTP backend) |
 | `EMAIL_HOST_USER`   | SMTP username                             |
 | `EMAIL_HOST_PASSWORD` | SMTP password                           |
 | `MAX_DOCTORS`       | Current cap on number of doctors (default: 5) |
+| `MIN_BOOKING_LEAD_MINUTES` | Minimum minutes before a slot's start time for it to be bookable (default: 60) |
 
 ## API Reference
 
 > Base URL: `/api/v1/`
 
+**Authentication:** staff (receptionists) authenticate via DRF token auth — `POST /api/v1/auth/login/` with `{"username": ..., "password": ...}` returns `{"token": "..."}`. Include it on subsequent requests as an `Authorization: Token <token>` header. Patients never authenticate; unauthenticated requests are the expected, normal path for patient self-service (see [System Design → Key Decisions, #9](#key-decisions)).
+
 **Required (per assessment spec):**
 
 | Method | Endpoint                                       | Description                                                                 |
 |--------|--------------------------------------------------|-------------------------------------------------------------------------------|
-| POST   | `/appointments`                                | Book a slot. Validates it falls within the doctor's working hours, isn't in the past, and isn't already taken. |
-| GET    | `/doctors/{id}/availability?date=YYYY-MM-DD`   | Return all available 30-minute slots for a doctor on a given date.           |
-| PATCH  | `/appointments/{id}/cancel`                    | Cancel an appointment with a required `reason`. Errors if already cancelled. |
-| PATCH  | `/appointments/{id}/reschedule`                | Move an appointment to a new slot, validated as a fresh booking. Errors if already cancelled. |
+| POST   | `/appointments/`                               | Book a slot. No OTP required. Validates it falls within the doctor's working hours, isn't in the past (or within `MIN_BOOKING_LEAD_MINUTES`), and isn't already taken. |
+| GET    | `/doctors/{id}/availability/?date=YYYY-MM-DD`  | Return all available 30-minute slots for a doctor on a given date.           |
+| PATCH  | `/appointments/{id}/cancel/`                   | Cancel an appointment with a required `reason`. Requires a valid `otp_code` unless the request is from an authenticated staff `User` (token auth). Errors if already cancelled. |
+| PATCH  | `/appointments/{id}/reschedule/`               | Move an appointment to a new slot, validated as a fresh booking. Requires a valid `otp_code` unless the request is from an authenticated staff `User`. Errors if already cancelled. |
 
 **Bonus (per assessment spec):**
 
 | Method | Endpoint                          | Description                                                        |
 |--------|-------------------------------------|----------------------------------------------------------------------|
-| GET    | `/patients/{id}/appointments`     | Upcoming appointments for a patient, sorted by date.                |
-| —      | *(validation rule)*                | Bookings are rejected if the slot starts within 1 hour of now.       |
+| GET    | `/patients/{id}/appointments/`   | Upcoming (booked, future-dated) appointments for a patient, sorted by date. **Staff-only** (`IsAuthenticated`) — deliberately not public, since `Patient.id` is a plain sequential integer and exposing another person's appointment history by guessable ID would be a privacy leak. Patients access their own appointment individually via the UUID link instead (see [System Design → Key Decisions, #8 and #10](#key-decisions)). |
+| —      | *(validation rule)*                | Bookings are rejected if the slot starts within `MIN_BOOKING_LEAD_MINUTES` (default 60) of now. ✅ implemented |
 
 **Additional (not required, added for completeness):**
 
 | Method | Endpoint                                  | Description                                     |
 |--------|--------------------------------------------|---------------------------------------------------|
-| GET    | `/doctors/`                               | List all doctors                                   |
-| GET    | `/appointments/`                          | List appointments for the current user            |
-| GET    | `/appointments/{id}/`                     | Retrieve a single appointment                      |
-| GET    | `/appointments/history/`                  | Appointment history / audit trail                  |
-| GET    | `/dashboard/stats/`                       | Appointment statistics (booked/cancelled/etc.)     |
+| POST   | `/appointments/{id}/request-otp/`         | Request a one-time code for `cancel` or `reschedule`, emailed to the patient on file (console-printed in local dev). |
+| POST   | `/auth/login/`                            | Staff login — exchanges username/password for a DRF auth token.   |
+| GET    | `/doctors/`                               | List all doctors *(not yet built)*                 |
+| GET    | `/appointments/`                          | List appointments for the current staff user *(not yet built)* |
+| GET    | `/appointments/{id}/`                     | Retrieve a single appointment *(not yet built)*    |
+| GET    | `/appointments/history/`                  | Appointment history / audit trail *(not yet built)* |
+| GET    | `/dashboard/stats/`                       | Appointment statistics (booked/cancelled/etc.) *(not yet built)* |
 
-*(Adjust endpoint names/paths to match the actual `urls.py` once finalized.)*
+All endpoints above marked without "(not yet built)" have been manually verified end-to-end against a running server (see [Testing](#testing) for the automated test suite covering the underlying service-layer logic).
+
+## Testing
+
+Automated tests cover the core booking logic in `appointments/tests.py`, run with:
+
+```bash
+uv run manage.py test appointments
+```
+
+Coverage includes:
+- Slot generation (correct count/spacing, doctor's day off, dangling-remainder edge case)
+- Booking success and rejection paths (double-booking, outside working hours, on a doctor's day off)
+- Patient record reuse by email across multiple bookings
+- **The database `UniqueConstraint` itself**, tested by bypassing the service layer entirely and inserting directly — proving the guarantee holds even independent of application logic
+- Cancellation (success, required reason, rejecting a double-cancel, slot freed afterward)
+- Rescheduling (success, original slot freed, rejecting a reschedule onto an already-taken slot **and confirming the original booking survives untouched**, rejecting reschedule of a cancelled appointment)
 
 ## Scalability Notes
 
@@ -275,14 +327,16 @@ The project intentionally starts small (5 doctors) but is structured to grow:
 ## Roadmap
 
 **Bonus items from the assessment spec:**
-- [ ] `GET /patients/{id}/appointments` — upcoming appointments for a patient, sorted by date
-- [ ] Reject bookings that start within 1 hour of now
+- [x] `GET /patients/{id}/appointments` — upcoming appointments for a patient, sorted by date. Implemented as staff-only, not public (see API Reference note).
+- [x] Reject bookings that start within 1 hour of now — implemented via `MIN_BOOKING_LEAD_MINUTES`
 
 **Deferred design decisions (see [System Design → Deferred to Future Iterations](#deferred-to-future-iterations)):**
 - [ ] `DoctorTimeOff` — let a doctor block off a day or date range
 - [ ] Split working shifts within a single day (e.g. a lunch-hour gap)
 - [ ] Automatic conflict resolution when a doctor's hours change (currently: grandfather + flag for manual review)
 - [ ] Role-based permissions distinguishing patients from receptionists at the API layer
+- [ ] Phone/SMS-based OTP verification (v1 is email-only)
+- [ ] Rate limiting on OTP requests per appointment
 
 **Other possible extensions:**
 - [ ] Doctor-side dashboard for managing their own schedule
@@ -297,4 +351,4 @@ The project intentionally starts small (5 doctors) but is structured to grow:
 
 ## License
 
-MIT
+MIT.
