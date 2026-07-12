@@ -43,6 +43,7 @@ class WorkingHours(models.Model):
     end_time = models.TimeField()
 
     class Meta:
+        verbose_name_plural = "Working Hours"
         constraints = [
             models.UniqueConstraint(
                 fields=["doctor", "weekday"],

@@ -82,6 +82,7 @@ class AuditLog(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        verbose_name_plural = "Audit Logs"
         ordering = ["-timestamp"]
 
     def __str__(self):
@@ -103,6 +104,10 @@ class OTP(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     is_used = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = "OTP"
+        verbose_name_plural = "OTPs"
 
     @staticmethod
     def generate_code():
