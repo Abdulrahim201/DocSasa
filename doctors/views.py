@@ -10,7 +10,7 @@ from appointments.serializers import AvailabilityQuerySerializer, SlotSerializer
 from appointments.services import get_available_slots
 from .serializers import DoctorSerializer, WorkingHoursSerializer
 
-from .models import Doctor
+from .models import Doctor, WorkingHours
 
 
 class DoctorAvailabilityView(APIView):
