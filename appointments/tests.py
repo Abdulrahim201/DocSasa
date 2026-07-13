@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 from django.test import TestCase
 from django.db import IntegrityError, transaction
@@ -13,7 +13,13 @@ from .services import (
     reschedule_appointment,
     BookingError,
     SlotUnavailableError,
+    request_otp, 
 )
+
+from rest_framework.test import APIClient
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 
 def next_weekday(weekday):
@@ -225,3 +231,126 @@ class RescheduleAppointmentTests(TestCase):
                 appointment_id=self.appt.id, new_date=self.monday,
                 new_start_time=self.slots[5]["start_time"],
             )
+
+
+
+class AppointmentAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.doctor = Doctor.objects.create(name="Dr. API Test")
+        WorkingHours.objects.create(
+            doctor=self.doctor, weekday=0, start_time="09:00", end_time="17:00",
+        )
+        self.monday = next_weekday(0)
+        self.staff_user = User.objects.create_user(username="reception1", password="testpass123")
+
+    def test_book_appointment_via_api_unauthenticated(self):
+        response = self.client.post("/api/v1/appointments/", {
+            "doctor": self.doctor.id, "date": str(self.monday), "start_time": "09:00:00",
+            "patient_name": "Jane", "patient_email": "jane@example.com",
+        })
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["status"], "booked")
+        self.assertIsNone(response.data["booked_by"])
+
+    def test_list_appointments_requires_authentication(self):
+        response = self.client.get("/api/v1/appointments/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_list_appointments_succeeds_for_authenticated_staff(self):
+        
+        appt = book_appointment(
+                doctor=self.doctor, date=self.monday, start_time=time(9, 0),
+                patient_name="Jane", patient_email="jane@example.com",
+            )
+       
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.get("/api/v1/appointments/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+
+    def test_cancel_without_otp_rejected_for_anonymous_patient(self):
+        appt = book_appointment(
+            doctor=self.doctor, date=self.monday, start_time=time(9, 0),
+            patient_name="Jane", patient_email="jane@example.com",
+            )
+      
+        response = self.client.patch(
+            f"/api/v1/appointments/{appt.id}/cancel/",
+            {"reason": "Testing"}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("otp_code", response.data)
+
+    def test_cancel_with_valid_otp_succeeds(self):
+        appt = book_appointment(
+            doctor=self.doctor, date=self.monday, start_time=time(9, 0),
+            patient_name="Jane", patient_email="jane@example.com",
+        )
+        otp = request_otp(appt, purpose="cancel")
+        response = self.client.patch(
+            f"/api/v1/appointments/{appt.id}/cancel/",
+            {"reason": "Testing", "otp_code": otp.code}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "cancelled")
+
+    def test_cancel_by_authenticated_staff_skips_otp(self):
+        appt = book_appointment(
+            doctor=self.doctor, date=self.monday, start_time=time(9, 0),
+            patient_name="Jane", patient_email="jane@example.com",
+        )
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            f"/api/v1/appointments/{appt.id}/cancel/",
+            {"reason": "Staff cancelled this"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "cancelled")
+
+
+class DoctorAPITests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.staff_user = User.objects.create_user(username="reception2", password="testpass123")
+
+    def test_list_doctors_is_public(self):
+        Doctor.objects.create(name="Dr. Public Test")
+        response = self.client.get("/api/v1/doctors/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+
+    def test_create_doctor_requires_authentication(self):
+        response = self.client.post("/api/v1/doctors/", {"name": "Dr. Blocked"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_create_doctor_succeeds_for_staff(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post("/api/v1/doctors/", {"name": "Dr. Allowed", "specialty": "ENT"})
+        self.assertEqual(response.status_code, 201)
+
+    def test_set_working_hours_requires_authentication(self):
+        doctor = Doctor.objects.create(name="Dr. Hours Test")
+        response = self.client.post(
+            f"/api/v1/doctors/{doctor.id}/working-hours/",
+            {"weekday": 0, "start_time": "09:00", "end_time": "17:00"}, format="json",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_set_working_hours_upserts_same_weekday(self):
+        doctor = Doctor.objects.create(name="Dr. Hours Test")
+        self.client.force_authenticate(user=self.staff_user)
+
+        first = self.client.post(
+            f"/api/v1/doctors/{doctor.id}/working-hours/",
+            {"weekday": 0, "start_time": "09:00", "end_time": "17:00"}, format="json",
+        )
+        second = self.client.post(
+            f"/api/v1/doctors/{doctor.id}/working-hours/",
+            {"weekday": 0, "start_time": "10:00", "end_time": "16:00"}, format="json",
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["id"], second.data["id"])  # same row, not a duplicate
+        self.assertEqual(WorkingHours.objects.filter(doctor=doctor, weekday=0).count(), 1)
