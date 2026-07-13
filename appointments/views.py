@@ -21,7 +21,7 @@ from .services import (
 )
 from datetime import date as date_cls
 
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Patient
 
@@ -32,9 +32,35 @@ def _get_appointment_or_404(pk):
         return None
 
 
-class BookAppointmentView(APIView):
-    """POST /appointments — public, no login required, no OTP required."""
-    permission_classes = [AllowAny]
+class AppointmentListCreateView(APIView):
+    """POST /appointments/ — public, no login required, no OTP required.
+    Books a new appointment.
+
+    GET /appointments/ — staff-only. Lists all appointments, optionally
+    filtered by ?doctor=, ?date=, ?status=. Supports the staff dashboard's
+    'manage appointments' screen."""
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [AllowAny()]
+
+    def get(self, request):
+        qs = Appointment.objects.select_related("doctor", "patient").order_by("date", "start_time")
+
+        doctor_id = request.query_params.get("doctor")
+        if doctor_id:
+            qs = qs.filter(doctor_id=doctor_id)
+
+        date_filter = request.query_params.get("date")
+        if date_filter:
+            qs = qs.filter(date=date_filter)
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        return Response(AppointmentSerializer(qs, many=True).data)
 
     def post(self, request):
         serializer = BookAppointmentSerializer(data=request.data)
@@ -166,3 +192,4 @@ class PatientAppointmentsView(APIView):
         )
 
         return Response(AppointmentSerializer(upcoming, many=True).data)
+    
