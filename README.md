@@ -289,29 +289,40 @@ Real secrets live in a local `.env` file, which is **git-ignored** and never com
 |--------|--------------------------------------------|---------------------------------------------------|
 | POST   | `/appointments/{id}/request-otp/`         | Request a one-time code for `cancel` or `reschedule`, emailed to the patient on file (console-printed in local dev). |
 | POST   | `/auth/login/`                            | Staff login — exchanges username/password for a DRF auth token.   |
-| GET    | `/doctors/`                               | List all doctors *(not yet built)*                 |
-| GET    | `/appointments/`                          | List appointments for the current staff user *(not yet built)* |
+| GET    | `/doctors/`                               | List all doctors — public.                          |
+| POST   | `/doctors/`                               | Create a doctor — **staff-only**. Enforces the `MAX_DOCTORS` cap. |
+| GET    | `/doctors/{id}/`                          | Retrieve a doctor, including their nested working hours — public. |
+| PATCH/PUT | `/doctors/{id}/`                       | Edit a doctor's name/specialty — **staff-only**.    |
+| POST   | `/doctors/{id}/working-hours/`            | Set a doctor's hours for one weekday — **staff-only**. Upserts: posting the same weekday again updates the existing row rather than creating a duplicate (enforced by the `unique_doctor_weekday` constraint). |
+| DELETE | `/doctors/{id}/working-hours/?weekday=N`  | Remove a weekday's hours entirely — **staff-only**. No row for a weekday means the doctor is off that day. |
+| GET    | `/appointments/`                          | List all appointments, optionally filtered by `?doctor=`, `?date=`, `?status=` — **staff-only**. Merged into the same view/URL as booking (`POST`), since it's the same resource — method distinguishes intent. |
 | GET    | `/appointments/{id}/`                     | Retrieve a single appointment *(not yet built)*    |
 | GET    | `/appointments/history/`                  | Appointment history / audit trail *(not yet built)* |
 | GET    | `/dashboard/stats/`                       | Appointment statistics (booked/cancelled/etc.) *(not yet built)* |
 
-All endpoints above marked without "(not yet built)" have been manually verified end-to-end against a running server (see [Testing](#testing) for the automated test suite covering the underlying service-layer logic).
+All endpoints above marked without "(not yet built)" have been both manually verified end-to-end against a running server and covered by the automated test suite (see [Testing](#testing)).
 
 ## Testing
 
-Automated tests cover the core booking logic in `appointments/tests.py`, run with:
+Automated tests (29 total) cover both the service layer and the API layer on top of it, in `appointments/tests.py`, run with:
 
 ```bash
-uv run manage.py test appointments
+uv run manage.py test appointments doctors
 ```
 
-Coverage includes:
+**Service-layer coverage** (calling `services.py` functions directly, no HTTP):
 - Slot generation (correct count/spacing, doctor's day off, dangling-remainder edge case)
 - Booking success and rejection paths (double-booking, outside working hours, on a doctor's day off)
 - Patient record reuse by email across multiple bookings
 - **The database `UniqueConstraint` itself**, tested by bypassing the service layer entirely and inserting directly — proving the guarantee holds even independent of application logic
 - Cancellation (success, required reason, rejecting a double-cancel, slot freed afterward)
 - Rescheduling (success, original slot freed, rejecting a reschedule onto an already-taken slot **and confirming the original booking survives untouched**, rejecting reschedule of a cancelled appointment)
+
+**API-layer coverage** (using DRF's test client against real views/urls):
+- Booking through `POST /appointments/` as an anonymous request, confirming `booked_by` is correctly null
+- `GET /appointments/` correctly requires staff authentication (401 when anonymous, 200 with expected data when authenticated)
+- OTP verification: cancelling without a code is rejected (400, `otp_code` flagged), cancelling with a valid code succeeds, and an authenticated staff user can cancel **without** any code at all — proving the "staff exempt from OTP" design decision is actually enforced, not just documented
+- Doctor endpoints: public `GET /doctors/`, staff-only `POST /doctors/` and `POST /doctors/{id}/working-hours/` (401 when anonymous), and the working-hours **upsert** behavior (posting the same weekday twice updates the same row rather than creating a duplicate, confirmed both via the response `id` and a direct DB count)
 
 ## Scalability Notes
 
