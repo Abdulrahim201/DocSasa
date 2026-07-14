@@ -193,3 +193,16 @@ class PatientAppointmentsView(APIView):
 
         return Response(AppointmentSerializer(upcoming, many=True).data)
     
+class AppointmentDetailView(APIView):
+    """GET /appointments/{id}/ — public. Returns one specific appointment.
+    Safe as a public endpoint specifically because Appointment.id is a UUID —
+    the link itself (from the confirmation email) is what grants a patient
+    access to view their own appointment. This does NOT let anyone browse
+    all appointments — that's the staff-only list view on the same base URL."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        appointment = _get_appointment_or_404(pk)
+        if appointment is None:
+            return Response({"detail": "Appointment not found."}, status=404)
+        return Response(AppointmentSerializer(appointment).data)
