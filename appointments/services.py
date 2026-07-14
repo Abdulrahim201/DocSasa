@@ -41,6 +41,13 @@ def get_available_slots(doctor, target_date: date_cls) -> list[dict]:
                    minus any slot with an active ("booked") appointment
                    minus any slot that's already in the past / within the lead-time buffer.
     """
+    now = timezone.now()
+
+    # A date entirely in the past has no valid slots at all — no appointment
+    # can ever be booked for a day that's already gone.
+    if target_date < now.date():
+        return []
+    
     weekday = target_date.weekday()  # Monday=0 ... Sunday=6, matches WorkingHours.Weekday
 
     try:
@@ -129,6 +136,17 @@ def book_appointment(*, doctor, date, start_time, patient_name, patient_email,
         raise SlotUnavailableError(
             "This slot was just booked by someone else. Please choose another."
         )
+    manage_url = f"{settings.FRONTEND_BASE_URL}/appointments/{appointment.id}"
+    send_mail(
+        subject="Your DocSasa appointment is confirmed",
+        message=(
+            f"Your appointment with {doctor.name} on {date} at {start_time} is confirmed.\n\n"
+            f"To view, reschedule, or cancel this appointment, visit:\n{manage_url}\n\n"
+            f"Note: rescheduling or cancelling will require a one-time code sent to this email."
+        ),
+        from_email=None,
+        recipient_list=[patient_email],
+    )
 
     return appointment
 

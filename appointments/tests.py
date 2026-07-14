@@ -68,6 +68,11 @@ class AvailabilityTests(TestCase):
         slots = get_available_slots(doctor2, self.monday)
         self.assertEqual(len(slots), 1)
 
+    def test_past_date_returns_no_slots(self):
+        from datetime import timedelta
+        yesterday = date.today() - timedelta(days=1)
+        self.assertEqual(get_available_slots(self.doctor, yesterday), [])
+
 
 class BookAppointmentTests(TestCase):
     def setUp(self):
@@ -308,6 +313,20 @@ class AppointmentAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["status"], "cancelled")
 
+    def test_get_appointment_detail_is_public(self):
+        appt = book_appointment(
+        doctor=self.doctor, date=self.monday, start_time=time(9, 0),
+        patient_name="Jane", patient_email="jane@example.com",
+        )
+        response = self.client.get(f"/api/v1/appointments/{appt.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["id"], str(appt.id))
+
+    def test_get_nonexistent_appointment_returns_404(self):
+        import uuid
+        response = self.client.get(f"/api/v1/appointments/{uuid.uuid4()}/")
+        self.assertEqual(response.status_code, 404)
+
 
 class DoctorAPITests(TestCase):
     def setUp(self):
@@ -354,3 +373,4 @@ class DoctorAPITests(TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertEqual(first.data["id"], second.data["id"])  # same row, not a duplicate
         self.assertEqual(WorkingHours.objects.filter(doctor=doctor, weekday=0).count(), 1)
+

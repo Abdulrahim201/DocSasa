@@ -23,3 +23,6 @@ staticfiles/
 .vscode/
 .idea/
 .DS_Store
+
+# Frontend
+frontend/node_modules/
