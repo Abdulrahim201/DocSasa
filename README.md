@@ -1,6 +1,6 @@
 # DocSasa
 
-An online appointment booking system for patients and doctors, built with Django and Django REST Framework.
+An online appointment booking system for patients and doctors, built with Django REST Framework on the backend and React on the frontend.
 
 DocSasa lets patients see real-time availability for a set of doctors and book a slot directly, with no double-booking. The system currently supports up to **5 doctors**, but is designed so that limit can be raised with minimal changes as demand grows.
 
@@ -16,6 +16,7 @@ DocSasa lets patients see real-time availability for a set of doctors and book a
 - [Data Model](#data-model)
 - [Booking Flow](#booking-flow)
 - [Getting Started](#getting-started)
+- [Frontend](#frontend)
 - [API Reference](#api-reference)
 - [Testing](#testing)
 - [Scalability Notes](#scalability-notes)
@@ -107,8 +108,10 @@ These were identified during design but intentionally left out of v1 to keep the
 | Layer            | Technology                     |
 |-------------------|--------------------------------|
 | Backend           | Django, Django REST Framework  |
+| Frontend          | React (Vite), React Router, Tailwind CSS |
 | Database          | PostgreSQL                     |
-| Notifications     | Django email backend (SMTP)    |
+| Auth              | DRF Token Authentication (staff only) |
+| Notifications     | Django email backend (console in dev; SMTP-ready) |
 | Version Control   | Git                             |
 
 ## System Architecture
@@ -260,6 +263,35 @@ Real secrets live in a local `.env` file, which is **git-ignored** and never com
 | `EMAIL_HOST_PASSWORD` | SMTP password                           |
 | `MAX_DOCTORS`       | Current cap on number of doctors (default: 5) |
 | `MIN_BOOKING_LEAD_MINUTES` | Minimum minutes before a slot's start time for it to be bookable (default: 60) |
+| `FRONTEND_BASE_URL` | Base URL of the React app, used to build the manage-appointment link sent in confirmation emails (default: `http://localhost:5173`) |
+
+## Frontend
+
+A React (Vite) single-page app lives in `frontend/`, covering all three actors:
+
+- **Patient booking** (`/`) — pick a doctor, date, and slot, enter contact details, and book. No login. Past dates are disabled in the date picker, and the backend independently rejects any past/too-soon slot regardless of what the UI allows.
+- **Manage appointment** (`/appointments/:id`) — the page a patient reaches via the link in their confirmation email. Shows the appointment's current details and lets them cancel (with a reason) or reschedule, both gated behind a one-time email code requested from this same page.
+- **Staff login** (`/staff/login`) — authenticates against the DRF token endpoint and stores the token in `localStorage`.
+- **Staff dashboard** (`/staff/dashboard`) — lists all appointments with date/status filters. Requires a valid staff token; redirects to login otherwise. Each booked appointment has inline **Cancel** and **Reschedule** actions right in the row — no navigation away from the list, no OTP prompt (the receptionist's token is what authorizes the action; the backend's `request.user.is_authenticated` check is what waives the OTP requirement). This directly supports the common real-world case of a patient calling in to cancel or move their appointment over the phone.
+- **Doctor management** (`/staff/doctors`) — add a doctor, and set their working hours either one weekday at a time or via an "Apply Mon–Fri" shortcut that upserts the same hours across all five weekdays in one action.
+
+### Running the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+This starts the Vite dev server, typically at `http://localhost:5173`. The Django API must also be running (`uv run manage.py runserver`) for the frontend to have anything to talk to — see [Getting Started](#getting-started) above.
+
+**CORS:** the backend uses `django-cors-headers` to explicitly allow requests from the frontend's origin (`CORS_ALLOWED_ORIGINS` in `docsasa/settings.py`, currently set to `localhost:5173`/`127.0.0.1:5173` for local dev). This will need updating to the frontend's real deployed URL once both sides are hosted (see [Roadmap](#roadmap)).
+
+### Frontend design notes
+
+- **Token storage in `localStorage`** — standard, simple approach for a token-auth SPA. Never used for anything patient-facing, since patients never authenticate.
+- **`ProtectedRoute` only checks that a token *exists***, not that it's still valid — an expired/revoked token is instead caught the first time a protected API call actually fails with a 401, at which point the user is redirected to login. No proactive token verification on route load; a reasonable v1 simplification.
+- **The manage-appointment link is safe as a public route specifically because `Appointment.id` is a UUID** (see [System Design → Key Decisions, #8](#key-decisions)) — knowing the link is what grants viewing access, and actually changing anything still requires the OTP step.
 
 ## API Reference
 
@@ -350,8 +382,10 @@ The project intentionally starts small (5 doctors) but is structured to grow:
 - [ ] Rate limiting on OTP requests per appointment
 
 **Other possible extensions:**
-- [ ] Doctor-side dashboard for managing their own schedule
+- [x] Doctor-side dashboard for managing their own schedule — implemented as a **staff**-facing "Doctors" page (`/staff/doctors`), not a doctor login, per the design decision that doctors remain passive in v1
 - [ ] Rate limiting on the booking endpoint
+- [ ] Update `CORS_ALLOWED_ORIGINS` and `FRONTEND_BASE_URL` to the real deployed frontend URL once hosted (currently configured for local dev only)
+- [ ] Proactive token validation on protected frontend routes, rather than only discovering an expired token on the first failed API call
 
 ## Contributing
 
@@ -362,4 +396,4 @@ The project intentionally starts small (5 doctors) but is structured to grow:
 
 ## License
 
-MIT.
+MIT

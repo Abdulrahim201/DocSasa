@@ -10,55 +10,32 @@ export default function ManageAppointment() {
   const [otpRequested, setOtpRequested] = useState(false);
   const [otpCode, setOtpCode] = useState("");
   const [reason, setReason] = useState("");
-  const [doctors, setDoctors] = useState([]);
   const [newDate, setNewDate] = useState("");
   const [slots, setSlots] = useState([]);
   const [newSlot, setNewSlot] = useState(null);
   const [success, setSuccess] = useState(null);
 
+  // Fetch the appointment itself once, on load.
   useEffect(() => {
-    api.get("/doctors/").then(setDoctors).catch(() => {});
-  }, []);
+    api
+      .get(`/appointments/${id}/`)
+      .then(setAppointment)
+      .catch((e) => setError(e.message));
+  }, [id]);
 
+  // Fetch availability whenever the reschedule date changes, once we know
+  // which doctor this appointment belongs to.
   useEffect(() => {
     if (!appointment || !newDate) {
       setSlots([]);
       return;
     }
-    useEffect(() => {
-  api
-    .get(`/appointments/${id}/`)
-    .then(setAppointment)
-    .catch((e) => setError(e.message));
-    }, [id]);
-
+    setNewSlot(null);
     api
       .get(`/doctors/${appointment.doctor}/availability/?date=${newDate}`)
       .then(setSlots)
       .catch((e) => setError(e.message));
   }, [newDate, appointment]);
-
-  {appointment && (
-    <div className="bg-gray-50 rounded p-3 mb-4 text-sm">
-        <p><span className="font-medium">Patient:</span> {appointment.patient.name}</p>
-        <p><span className="font-medium">Doctor:</span> {appointment.doctor_name}</p>
-        <p><span className="font-medium">Date:</span> {appointment.date}</p>
-        <p><span className="font-medium">Time:</span> {appointment.start_time.slice(0, 5)}</p>
-        <p>
-            <span className="font-medium">Status:</span>{" "}
-            <span className="capitalize">{appointment.status}</span>
-        </p>
-    </div>
-    )}
-
-    {!mode && appointment?.status === "booked" && (
-        <div className="flex gap-2">
-            ...
-        </div>
-    )}
-    {appointment?.status === "cancelled" && !mode && (
-        <p className="text-sm text-gray-500">This appointment has already been cancelled.</p>
-    )}
 
   async function requestOtp(purpose) {
     setError(null);
@@ -121,7 +98,20 @@ export default function ManageAppointment() {
 
       {error && <p className="text-red-600 text-sm mb-4">{error}</p>}
 
-      {!mode && (
+      {appointment && (
+        <div className="bg-gray-50 rounded p-3 mb-4 text-sm">
+          <p><span className="font-medium">Patient:</span> {appointment.patient.name}</p>
+          <p><span className="font-medium">Doctor:</span> {appointment.doctor_name}</p>
+          <p><span className="font-medium">Date:</span> {appointment.date}</p>
+          <p><span className="font-medium">Time:</span> {appointment.start_time.slice(0, 5)}</p>
+          <p>
+            <span className="font-medium">Status:</span>{" "}
+            <span className="capitalize">{appointment.status}</span>
+          </p>
+        </div>
+      )}
+
+      {!mode && appointment?.status === "booked" && (
         <div className="flex gap-2">
           <button
             onClick={() => requestOtp("cancel")}
@@ -138,8 +128,12 @@ export default function ManageAppointment() {
         </div>
       )}
 
+      {appointment?.status === "cancelled" && !mode && (
+        <p className="text-sm text-gray-500">This appointment has already been cancelled.</p>
+      )}
+
       {mode && otpRequested && (
-        <p className="text-sm text-gray-600 mb-4">
+        <p className="text-sm text-gray-600 mb-4 mt-4">
           A verification code has been sent to your email. Enter it below to continue.
         </p>
       )}
@@ -168,14 +162,17 @@ export default function ManageAppointment() {
 
       {mode === "reschedule" && (
         <form onSubmit={handleReschedule}>
-         <input
-          type="date"
-          required
-          min={new Date().toISOString().split("T")[0]}
-          className="w-full border rounded p-2 mb-2"
-          value={newDate}
-          onChange={(e) => setNewDate(e.target.value)}
+          <input
+            type="date"
+            required
+            min={new Date().toISOString().split("T")[0]}
+            className="w-full border rounded p-2 mb-2"
+            value={newDate}
+            onChange={(e) => setNewDate(e.target.value)}
           />
+          {newDate && slots.length === 0 && (
+            <p className="text-sm text-gray-500 mb-2">No slots available on this date.</p>
+          )}
           {slots.length > 0 && (
             <div className="grid grid-cols-3 gap-2 mb-2">
               {slots.map((slot) => (
@@ -204,7 +201,9 @@ export default function ManageAppointment() {
           <button
             type="submit"
             disabled={!newSlot}
-            className="w-full bg-blue-600 text-white rounded p-2"
+            className={`w-full rounded p-2 text-white ${
+              newSlot ? "bg-blue-600" : "bg-gray-300 cursor-not-allowed"
+            }`}
           >
             Confirm reschedule
           </button>
