@@ -68,6 +68,11 @@ class AvailabilityTests(TestCase):
         slots = get_available_slots(doctor2, self.monday)
         self.assertEqual(len(slots), 1)
 
+    def test_past_date_returns_no_slots(self):
+        from datetime import timedelta
+        yesterday = date.today() - timedelta(days=1)
+        self.assertEqual(get_available_slots(self.doctor, yesterday), [])
+
 
 class BookAppointmentTests(TestCase):
     def setUp(self):

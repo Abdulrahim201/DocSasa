@@ -41,6 +41,13 @@ def get_available_slots(doctor, target_date: date_cls) -> list[dict]:
                    minus any slot with an active ("booked") appointment
                    minus any slot that's already in the past / within the lead-time buffer.
     """
+    now = timezone.now()
+
+    # A date entirely in the past has no valid slots at all — no appointment
+    # can ever be booked for a day that's already gone.
+    if target_date < now.date():
+        return []
+    
     weekday = target_date.weekday()  # Monday=0 ... Sunday=6, matches WorkingHours.Weekday
 
     try:
