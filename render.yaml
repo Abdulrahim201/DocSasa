@@ -7,13 +7,14 @@ databases:
 services:
   - type: web
     name: docsasa-backend
-    env: python # Changed from runtime to env
-    plan: free  # Fixed case-sensitivity issue (was 'Free')
+    env: python
+    plan: free
     buildCommand: >
       pip install uv &&
       uv sync --frozen &&
       uv run manage.py collectstatic --noinput &&
-      uv run manage.py migrate
+      uv run manage.py migrate &&
+      uv run manage.py createsuperuser --noinput || true
     startCommand: uv run gunicorn docsasa.wsgi:application
     envVars:
       - key: DATABASE_URL
@@ -25,18 +26,16 @@ services:
       - key: DEBUG
         value: "False"
       - key: EMAIL_BACKEND
-        value: django.core.mail.backends.smtp.EmailBackend
-      - key: EMAIL_HOST
-        value: smtp-relay.brevo.com
-      - key: EMAIL_PORT
-        value: "587"
-      - key: EMAIL_USE_TLS
-        value: "True"
-      - key: EMAIL_HOST_USER
-        sync: false
-      - key: EMAIL_HOST_PASSWORD
+        value: anymail.backends.brevo.EmailBackend
+      - key: BREVO_API_KEY
         sync: false
       - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: DJANGO_SUPERUSER_USERNAME
+        sync: false
+      - key: DJANGO_SUPERUSER_EMAIL
+        sync: false
+      - key: DJANGO_SUPERUSER_PASSWORD
         sync: false
       - key: FRONTEND_BASE_URL
         value: https://docsasa-frontend.onrender.com
@@ -47,10 +46,14 @@ services:
 
   - type: web
     name: docsasa-frontend
-    env: static # Changed from runtime to env for blueprint compliance
+    env: static
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       - key: VITE_API_BASE_URL
         value: https://docsasa-backend.onrender.com/api/v1
