@@ -137,16 +137,21 @@ def book_appointment(*, doctor, date, start_time, patient_name, patient_email,
             "This slot was just booked by someone else. Please choose another."
         )
     manage_url = f"{settings.FRONTEND_BASE_URL}/appointments/{appointment.id}"
-    send_mail(
-        subject="Your DocSasa appointment is confirmed",
-        message=(
-            f"Your appointment with {doctor.name} on {date} at {start_time} is confirmed.\n\n"
-            f"To view, reschedule, or cancel this appointment, visit:\n{manage_url}\n\n"
-            f"Note: rescheduling or cancelling will require a one-time code sent to this email."
-        ),
-        from_email=None,
-        recipient_list=[patient_email],
-    )
+    try:
+        send_mail(
+            subject="Your DocSasa appointment is confirmed",
+            message=(
+                f"Your appointment with {doctor.name} on {date} at {start_time} is confirmed.\n\n"
+                f"To view, reschedule, or cancel this appointment, visit:\n{manage_url}\n\n"
+                f"Note: rescheduling or cancelling will require a one-time code sent to this email."
+            ),
+            from_email=None,
+            recipient_list=[patient_email],
+        )
+    except Exception:
+        # Booking succeeded regardless of email delivery — don't let a
+        # notification failure roll back or fail an otherwise-valid booking.
+        pass
 
     return appointment
 
@@ -243,15 +248,23 @@ def request_otp(appointment, purpose):
         code=OTP.generate_code(),
         purpose=purpose,
     )
-    send_mail(
-        subject=f"Your DocSasa verification code",
-        message=(
-            f"Your one-time code to {purpose} your appointment is: {otp.code}\n"
-            f"This code expires in 10 minutes and can only be used once."
-        ),
-        from_email=None,  # uses DEFAULT_FROM_EMAIL from settings
-        recipient_list=[appointment.patient.email],
-    )
+    try:
+        send_mail(
+            subject=f"Your DocSasa verification code",
+            message=(
+                f"Your one-time code to {purpose} your appointment is: {otp.code}\n"
+                f"This code expires in 10 minutes and can only be used once."
+            ),
+            from_email=None,  # uses DEFAULT_FROM_EMAIL from settings
+            recipient_list=[appointment.patient.email],
+        )
+    except Exception:
+        # Unlike a booking confirmation, this email delivering IS the point
+        # of this action — if it fails, the patient has no way to get their
+        # code, so we must tell them rather than pretend success.
+        raise BookingError(
+            "We couldn't send your verification code right now. Please try again shortly."
+        )
     return otp
 
 
@@ -268,3 +281,6 @@ def verify_otp(appointment, purpose, code):
 
     otp.is_used = True
     otp.save(update_fields=["is_used"])
+
+
+
