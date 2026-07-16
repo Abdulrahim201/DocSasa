@@ -84,6 +84,8 @@ These were identified during design but intentionally left out of v1 to keep the
 - **Phone/SMS-based OTP verification.** v1 verifies patient self-service actions (cancel/reschedule) by email OTP only. Phone number is still captured on `Patient` (useful for staff to call a patient directly), but isn't wired into any verification flow. SMS OTP would require integrating a third-party provider (e.g. Twilio, Africa's Talking) — deferred to v1.1+ once that added cost/complexity is worth it.
 - **Rate limiting on OTP requests** — nothing currently stops repeated OTP requests for the same appointment; worth adding (e.g. max 3 per appointment per hour) before production use, to prevent inbox-spamming abuse.
 
+- **Rescheduling confirmation** v1 does not send an email to the users once rescheduling is done from the staff, the assumption was that for a reschedule to happen the patient gives consent to make the changes according to their availability. However when the patient reschedule their appointments manually they recieve the rescheduling confirmation. 
+
 ## Core Concepts
 
 - **Doctor working hours** — Each doctor has per-weekday working hours (they can differ by day, or be off entirely on some days). These hours generate the universe of possible slots for that doctor. Doctors are a largely passive actor: they set their hours and view their schedule, but don't book on their own behalf.
