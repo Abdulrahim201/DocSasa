@@ -48,7 +48,6 @@ services:
   - type: web
     name: docsasa-frontend
     env: static # Changed from runtime to env for blueprint compliance
-    plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
