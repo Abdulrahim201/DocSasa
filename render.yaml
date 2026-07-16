@@ -7,8 +7,8 @@ databases:
 services:
   - type: web
     name: docsasa-backend
-    runtime: python
-    plan: Free
+    env: python # Changed from runtime to env
+    plan: free  # Fixed case-sensitivity issue (was 'Free')
     buildCommand: >
       pip install uv &&
       uv sync --frozen &&
@@ -47,7 +47,7 @@ services:
 
   - type: web
     name: docsasa-frontend
-    runtime: static
+    env: static # Changed from runtime to env for blueprint compliance
     plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
