@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: docsasa_test
+          POSTGRES_USER: docsasa_user
+          POSTGRES_PASSWORD: docsasa_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docsasa_user -d docsasa_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      SECRET_KEY: ci-test-secret-key-not-for-production
+      DEBUG: "False"
+      POSTGRES_DB: docsasa_test
+      POSTGRES_USER: docsasa_user
+      POSTGRES_PASSWORD: docsasa_password
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      EMAIL_BACKEND: django.core.mail.backends.console.EmailBackend
+      FRONTEND_BASE_URL: http://localhost:5173
+      MAX_DOCTORS: "5"
+      MIN_BOOKING_LEAD_MINUTES: "60"
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run migrations
+        run: uv run manage.py migrate
+
+      - name: Run test suite
+        run: uv run manage.py test appointments doctors

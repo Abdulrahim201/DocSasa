@@ -17,6 +17,7 @@ DocSasa lets patients see real-time availability for a set of doctors and book a
 - [Booking Flow](#booking-flow)
 - [Getting Started](#getting-started)
 - [Frontend](#frontend)
+- [Deployment](#deployment)
 - [API Reference](#api-reference)
 - [Testing](#testing)
 - [Scalability Notes](#scalability-notes)
@@ -83,6 +84,8 @@ These were identified during design but intentionally left out of v1 to keep the
 - **Role-based permissions** distinguishing patients from receptionists at the API layer, and integration with an external clinic HMIS.
 - **Phone/SMS-based OTP verification.** v1 verifies patient self-service actions (cancel/reschedule) by email OTP only. Phone number is still captured on `Patient` (useful for staff to call a patient directly), but isn't wired into any verification flow. SMS OTP would require integrating a third-party provider (e.g. Twilio, Africa's Talking) — deferred to v1.1+ once that added cost/complexity is worth it.
 - **Rate limiting on OTP requests** — nothing currently stops repeated OTP requests for the same appointment; worth adding (e.g. max 3 per appointment per hour) before production use, to prevent inbox-spamming abuse.
+
+- **Rescheduling confirmation** v1 does not send an email to the users once rescheduling is done from the staff, the assumption was that for a reschedule to happen the patient gives consent to make the changes according to their availability. However when the patient reschedule their appointments manually they recieve the rescheduling confirmation. 
 
 ## Core Concepts
 
@@ -285,13 +288,49 @@ npm run dev
 
 This starts the Vite dev server, typically at `http://localhost:5173`. The Django API must also be running (`uv run manage.py runserver`) for the frontend to have anything to talk to — see [Getting Started](#getting-started) above.
 
-**CORS:** the backend uses `django-cors-headers` to explicitly allow requests from the frontend's origin (`CORS_ALLOWED_ORIGINS` in `docsasa/settings.py`, currently set to `localhost:5173`/`127.0.0.1:5173` for local dev). This will need updating to the frontend's real deployed URL once both sides are hosted (see [Roadmap](#roadmap)).
+**CORS:** the backend uses `django-cors-headers` to explicitly allow requests from the frontend's origin (`CORS_ALLOWED_ORIGINS` in `docsasa/settings.py`). Configured for local dev (`localhost:5173`/`127.0.0.1:5173`) and the deployed frontend URL (see [Deployment](#deployment)).
 
 ### Frontend design notes
 
 - **Token storage in `localStorage`** — standard, simple approach for a token-auth SPA. Never used for anything patient-facing, since patients never authenticate.
 - **`ProtectedRoute` only checks that a token *exists***, not that it's still valid — an expired/revoked token is instead caught the first time a protected API call actually fails with a 401, at which point the user is redirected to login. No proactive token verification on route load; a reasonable v1 simplification.
 - **The manage-appointment link is safe as a public route specifically because `Appointment.id` is a UUID** (see [System Design → Key Decisions, #8](#key-decisions)) — knowing the link is what grants viewing access, and actually changing anything still requires the OTP step.
+
+## Deployment
+
+**Live application:** https://docsasa-frontend.onrender.com
+**Live API base URL:** https://docsasa-backend.onrender.com/api/v1/
+**Django admin:** https://docsasa-backend.onrender.com/admin/
+
+> Note: the bare backend URL (`https://docsasa-backend.onrender.com/` with no path) has no landing page and will correctly return a 404 — the backend is API-only, with real routes living under `/api/v1/...` and `/admin/`. That 404 is expected, not a sign of a broken deploy.
+
+### Hosting
+
+Both the backend (Django + DRF) and frontend (React static build) are deployed on **Render**, provisioned together from a single [`render.yaml`](./render.yaml) Blueprint at the repo root:
+
+- **`docsasa-backend`** — a Python web service running `gunicorn`, on Render's free instance tier.
+- **`docsasa-frontend`** — a static site, built via `npm run build` and served directly by Render (free tier, static sites have no paid tier to begin with).
+- **`docsasa-db`** — a free-tier PostgreSQL instance. Render's free Postgres expires 30 days after creation (with a grace period after), which was an acceptable trade-off for this assessment's ~1-month timeline; a paid instance (~$6–7/mo) would be the natural next step for longer-term hosting.
+
+**Branch & auto-deploy:** Render is configured to deploy from **`main`**. Any push to `main` — including a merged pull request — triggers an automatic rebuild and redeploy of both services. *(A GitHub Actions pipeline that runs the test suite on every pull request, gating this auto-deploy, is planned next — see [Roadmap](#roadmap).)*
+
+**Cold starts:** Render's free web service tier spins the backend down after ~15 minutes of no traffic. The first request after a period of inactivity can take 30–60 seconds to respond while the container restarts — this is expected free-tier behavior, not a bug. Subsequent requests are fast until it goes idle again.
+
+### Environment & secrets
+
+Non-sensitive config lives directly in `render.yaml` (e.g. `MAX_DOCTORS`, `MIN_BOOKING_LEAD_MINUTES`, service URLs). Secrets (`BREVO_API_KEY`, `DEFAULT_FROM_EMAIL`, `DJANGO_SUPERUSER_*`) are marked `sync: false` in the Blueprint, meaning they're **not** committed to the repo — they're entered directly in Render's dashboard per-service.
+
+### Email delivery
+
+Production email uses **Brevo's transactional email API** (via `django-anymail`), not SMTP — this was a deliberate correction, not the original plan: Render's free web services block outbound traffic on the SMTP ports (25/465/587) entirely, so the initially-planned SMTP relay silently couldn't work on the free tier. Switching to Brevo's HTTP API (port 443, not blocked) resolved this. *(This debugging process — and how AI tooling helped diagnose it — is covered in the AI Reflection section, still to be added.)*
+
+A booking-confirmation or OTP email failing to send (e.g. during Brevo's new-account activation review) is handled differently depending on which email it is:
+- **Booking confirmation** — failure is swallowed; the booking itself still succeeds, since losing a confirmation email is far less harmful than losing a real appointment over a notification hiccup.
+- **OTP code** — failure is surfaced as a clear error to the caller, since the whole point of that email *is* its delivery; silently succeeding would leave a patient stuck with no way to verify.
+
+### Superuser bootstrap
+
+Since Render's free web services don't include Shell/SSH access, the initial Django superuser is created automatically as part of the build command (`createsuperuser --noinput`, using `DJANGO_SUPERUSER_USERNAME`/`EMAIL`/`PASSWORD` env vars), guarded with `|| true` so it harmlessly no-ops on every subsequent deploy once the account already exists.
 
 ## API Reference
 
@@ -396,4 +435,4 @@ The project intentionally starts small (5 doctors) but is structured to grow:
 
 ## License
 
-MIT
+ MIT.
