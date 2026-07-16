@@ -13,7 +13,7 @@ from doctors.models import Doctor
 class Patient(models.Model):
     name = models.CharField(max_length=150)
     email = models.EmailField()  # required — the only channel used for OTP verification in v1
-    phone = models.CharField(max_length=10, blank=True)  # optional, informational only (e.g. for staff to call)
+    phone = models.CharField(max_length=20, blank=True)  # optional, informational only (e.g. for staff to call)
 
     def __str__(self):
         return self.name
