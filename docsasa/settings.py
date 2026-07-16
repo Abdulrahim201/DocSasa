@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'accounts',
     'doctors',
     'appointments',
+    'anymail',
 ]
 
 REST_FRAMEWORK = {
@@ -161,6 +162,10 @@ EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@docsasa.local')
+
+ANYMAIL = {
+    "BREVO_API_KEY": config('BREVO_API_KEY', default=''),
+}
 
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='http://localhost:5173')
 
