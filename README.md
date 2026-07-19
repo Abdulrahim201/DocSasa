@@ -223,7 +223,7 @@ A simplified view of the core entities:
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/Abdulrahim201/DocSasa.git
 cd docsasa
 
 # Create the virtual environment and install dependencies
